@@ -22,8 +22,8 @@ Fireworks or xAI are attributed correctly. The other wrappers use fixed vendors:
 | ``OpenAIChatWrapper`` | ``openai.OpenAI`` | ``openai_chat`` |
 | ``OpenAIResponsesWrapper`` | ``openai.OpenAI`` | ``openai_responses`` |
 | ``AnthropicWrapper`` | ``anthropic.Anthropic`` | ``anthropic`` |
-| ``GeminiWrapper`` | ``google.generativeai.GenerativeModel`` | ``gemini`` |
-| ``FireworksWrapper`` | ``fireworks.client.Fireworks`` | ``fireworks-ai`` |
+| ``GeminiWrapper`` | ``google.genai.Client`` | ``gemini`` |
+| ``FireworksWrapper`` | ``fireworks.Fireworks`` | ``fireworks-ai`` |
 | ``BedrockWrapper`` | ``boto3.client('bedrock-runtime')`` | ``bedrock`` |
 
 ## Basic usage
@@ -125,28 +125,31 @@ resp_wrapper.responses.create(...)
 # Anthropic
 import anthropic
 anth_wrapper = AnthropicWrapper(anthropic.Anthropic())
-anth_wrapper.messages.create(model="claude-3-haiku-20240307", ...)
+anth_wrapper.messages.create(model="claude-sonnet-4-5-20241022", ...)
 
-# Gemini
-import google.generativeai as genai
-genai.configure()
-gem_wrapper = GeminiWrapper(genai.GenerativeModel("gemini-1.5-flash"))
-result = gem_wrapper.generate_content("hello")
+# Gemini (google-genai SDK)
+from google import genai
+client = genai.Client()
+gem_wrapper = GeminiWrapper(client)
+gem_wrapper.models.generate_content(model="gemini-2.5-flash", contents="hello")
 
 # Fireworks
-from fireworks.client import Fireworks
+from fireworks import Fireworks
 fw_client = Fireworks()
 fw_wrapper = FireworksWrapper(fw_client)
-fw_wrapper.completions.create(
+fw_wrapper.chat.completions.create(
     model="accounts/fireworks/models/deepseek-r1",
-    prompt="hi",
+    messages=[{"role": "user", "content": "hi"}],
 )
 
-# Bedrock
+# Bedrock (Converse API)
 import boto3
 bed_client = boto3.client("bedrock-runtime", region_name="us-east-1")
 bed_wrapper = BedrockWrapper(bed_client)
-bed_wrapper.invoke_model(modelId="anthropic.claude-v2", body={"prompt": "hi"})
+bed_wrapper.converse(
+    modelId="anthropic.claude-sonnet-4-5-20241022-v2:0",
+    messages=[{"role": "user", "content": [{"text": "hi"}]}],
+)
 ```
 
 Call ``wrapper.close()`` during shutdown when using the queue-based
