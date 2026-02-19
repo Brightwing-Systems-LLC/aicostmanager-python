@@ -14,7 +14,7 @@ from aicostmanager.usage_utils import get_usage_from_response
 
 anthropic = pytest.importorskip("anthropic")
 
-BASE_URL = os.environ.get("AICM_API_BASE", "http://localhost:8001")
+BASE_URL = os.environ.get("AICM_API_BASE", "http://127.0.0.1:8890")
 
 
 def _wait_for_cost_event(aicm_api_key: str, response_id: str):

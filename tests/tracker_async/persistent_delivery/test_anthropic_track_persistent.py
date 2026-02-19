@@ -11,7 +11,7 @@ from aicostmanager.ini_manager import IniManager
 from aicostmanager.tracker import Tracker
 from aicostmanager.usage_utils import get_usage_from_response
 
-BASE_URL = os.environ.get("AICM_API_BASE", "http://127.0.0.1:8001")
+BASE_URL = os.environ.get("AICM_API_BASE", "http://127.0.0.1:8890")
 
 
 def _extract_response_id(used_id, fallback):
@@ -42,7 +42,7 @@ def test_anthropic_track_non_streaming(anthropic_api_key, aicm_api_key, tmp_path
         client = anthropic.Anthropic(api_key=anthropic_api_key)
 
         resp = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-sonnet-4-20250514",
             messages=[{"role": "user", "content": "Say hi"}],
             max_tokens=20,
         )
@@ -50,7 +50,7 @@ def test_anthropic_track_non_streaming(anthropic_api_key, aicm_api_key, tmp_path
         usage = get_usage_from_response(resp, "anthropic")
         asyncio.run(
             tracker.track_async(
-                "anthropic::claude-3-5-sonnet-20241022",
+                "anthropic::claude-sonnet-4-20250514",
                 usage,
                 response_id=response_id,
             )
@@ -91,7 +91,7 @@ def test_anthropic_track_streaming(anthropic_api_key, aicm_api_key, tmp_path):
         usage_payload = {}
 
         with client.messages.stream(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-sonnet-4-20250514",
             messages=[{"role": "user", "content": "Say hi"}],
             max_tokens=20,
         ) as stream:
@@ -114,7 +114,7 @@ def test_anthropic_track_streaming(anthropic_api_key, aicm_api_key, tmp_path):
         # Track the usage and get the actual response_id that was used
         used_id = asyncio.run(
             tracker.track_async(
-                "anthropic::claude-3-5-sonnet-20241022",
+                "anthropic::claude-sonnet-4-20250514",
                 usage_payload,
                 response_id=response_id,
             )

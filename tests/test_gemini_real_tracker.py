@@ -10,7 +10,7 @@ from aicostmanager.ini_manager import IniManager
 from aicostmanager.tracker import Tracker
 from tests.track_asserts import assert_track_result_payload
 
-BASE_URL = os.environ.get("AICM_API_BASE", "http://localhost:8001")
+BASE_URL = os.environ.get("AICM_API_BASE", "http://127.0.0.1:8890")
 
 
 def _to_dict(obj, *, by_alias: bool = False):

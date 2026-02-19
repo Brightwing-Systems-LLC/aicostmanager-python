@@ -10,7 +10,7 @@ from aicostmanager.tracker import Tracker
 from aicostmanager.usage_utils import get_usage_from_response
 from tests.track_asserts import assert_track_result_payload
 
-BASE_URL = os.environ.get("AICM_API_BASE", "http://localhost:8001")
+BASE_URL = os.environ.get("AICM_API_BASE", "http://127.0.0.1:8890")
 
 
 def _wait_for_empty(delivery, timeout: float = 10.0) -> bool:

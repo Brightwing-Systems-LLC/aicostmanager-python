@@ -9,17 +9,11 @@ from aicostmanager.tracker import Tracker
 from aicostmanager.usage_utils import get_usage_from_response
 from tests.track_asserts import assert_track_result_payload
 
-BASE_URL = os.environ.get("AICM_API_BASE", "http://localhost:8001")
+BASE_URL = os.environ.get("AICM_API_BASE", "http://127.0.0.1:8890")
 
 
 def _make_openai_client(api_key: str):
     return openai.OpenAI(api_key=api_key)
-
-
-def _make_fireworks_client(api_key: str):
-    return openai.OpenAI(
-        api_key=api_key, base_url="https://api.fireworks.ai/inference/v1"
-    )
 
 
 def _make_xai_client(api_key: str):
@@ -30,12 +24,6 @@ def _make_xai_client(api_key: str):
     "service_key, model, key_env, maker",
     [
         ("openai::gpt-5-mini", "gpt-5-mini", "OPENAI_API_KEY", _make_openai_client),
-        (
-            "fireworks-ai::accounts/fireworks/models/deepseek-r1-0528",
-            "accounts/fireworks/models/deepseek-r1-0528",
-            "FIREWORKS_API_KEY",
-            _make_fireworks_client,
-        ),
         ("xai::grok-3-mini", "grok-3-mini", "GROK_API_KEY", _make_xai_client),
     ],
 )

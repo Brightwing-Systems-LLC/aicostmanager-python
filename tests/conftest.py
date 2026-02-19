@@ -103,7 +103,7 @@ def aws_region():
 
 @pytest.fixture(scope="session")
 def aicm_api_base():
-    return os.environ.get("AICM_API_BASE", "https://aicostmanager.com")
+    return os.environ.get("AICM_API_BASE", "http://127.0.0.1:8890")
 
 
 @pytest.fixture(scope="session")

@@ -12,7 +12,7 @@ from aicostmanager.delivery import DeliveryConfig, DeliveryType, create_delivery
 from aicostmanager.ini_manager import IniManager
 from aicostmanager.tracker import Tracker
 
-BASE_URL = "http://127.0.0.1:8001"
+BASE_URL = os.environ.get("AICM_API_BASE", "http://127.0.0.1:8890")
 
 
 def _to_dict(obj, *, by_alias: bool = False):
