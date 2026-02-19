@@ -2,6 +2,53 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-02-19
+
+### Removed — BREAKING CHANGES
+
+These endpoints have been removed from the server in favor of MCP tools.
+Analytics, reports, and limit event queries are now available exclusively
+through the MCP server at `mcp.aicostmanager.com`.
+
+- **Analytics methods** (12 methods removed from both sync and async clients):
+  - `analytics_costs_daily()`, `analytics_costs_monthly()`
+  - `analytics_costs_snapshots()`, `analytics_costs_trends()`
+  - `analytics_costs_peak_usage()`
+  - `analytics_customers_costs()`, `analytics_customers_tokens()`
+  - `analytics_services_ranking()`, `analytics_services_efficiency()`,
+    `analytics_services_usage()`
+  - `analytics_vendors_comparison()`, `analytics_vendors_usage()`
+- **Reports methods** (3 methods removed):
+  - `list_reports()`, `get_report()`, `download_report()`
+- **Limit events method** (1 method removed):
+  - `list_limit_events()`
+- **Export schedule/job methods** (8 methods removed — already broken since
+  server-side removal in 0.1.x):
+  - `create_export_schedule()`, `list_export_schedules()`,
+    `get_export_schedule()`, `update_export_schedule()`,
+    `delete_export_schedule()`
+  - `list_export_jobs()`, `get_export_job()`, `trigger_export_job()`
+- **Deleted model modules**:
+  - `models/analytics.py` — all analytics filter/response schemas
+  - `models/reports.py` — `GeneratedReportOut`
+  - `models/schedules.py` — all export schedule/job schemas
+
+### Migration Guide
+
+If you use any of the removed methods, connect to the MCP server instead.
+The MCP server provides equivalent (and enhanced) functionality:
+
+| Removed SDK method | MCP tool replacement |
+| --- | --- |
+| `analytics_costs_daily()` | `get_analytics_costs_daily` |
+| `analytics_costs_snapshots()` | `get_analytics_costs_snapshots` |
+| `list_reports()` | `get_reports` |
+| `download_report()` | `get_report_download_url` |
+| `list_limit_events()` | `get_limit_events` |
+| `create_export_schedule()` | Use `request_on_demand_export` or web UI |
+
+See <https://aicostmanager.com/mcp-server/> for the full MCP tool reference.
+
 ## [0.1.41] - 2025-10-07
 
 ### Fixed
