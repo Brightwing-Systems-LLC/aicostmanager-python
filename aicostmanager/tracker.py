@@ -18,6 +18,8 @@ from .delivery import (
 from .ini_manager import IniManager
 from .logger import create_logger
 from .usage_utils import (
+    API_TO_VENDOR,
+    VENDOR_TO_API,
     get_streaming_usage_from_response,
     get_usage_from_response,
 )
@@ -154,16 +156,7 @@ class Tracker:
         """
         if "::" in service_key:
             vendor = service_key.split("::")[0]
-            # Map vendor to api_id
-            vendor_to_api = {
-                "openai": "openai_chat",
-                "anthropic": "anthropic",
-                "amazon-bedrock": "amazon-bedrock",
-                "fireworks-ai": "fireworks-ai",
-                "xai": "openai_chat",  # X.AI uses OpenAI-compatible API
-                "google": "gemini",
-            }
-            api_id = vendor_to_api.get(vendor, vendor)
+            api_id = VENDOR_TO_API.get(vendor, vendor)
             return vendor, api_id
         else:
             # If no "::" found, assume it's already an api_id
@@ -177,16 +170,7 @@ class Tracker:
             # service_key was actually an api_id, extract model from response
             model = getattr(response_or_chunk, "model", None)
             if model:
-                # Map api_id back to vendor
-                api_to_vendor = {
-                    "openai_chat": "openai",
-                    "openai_responses": "openai",
-                    "fireworks-ai": "fireworks-ai",
-                    "anthropic": "anthropic",
-                    "amazon-bedrock": "amazon-bedrock",
-                    "gemini": "google",
-                }
-                vendor = api_to_vendor.get(api_id, api_id)
+                vendor = API_TO_VENDOR.get(api_id, api_id)
                 return f"{vendor}::{model}"
         return service_key
 

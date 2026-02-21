@@ -155,3 +155,75 @@ bed_wrapper.converse(
 Call ``wrapper.close()`` during shutdown when using the queue-based
 ``PERSISTENT_QUEUE`` delivery to flush buffered tracking data. With the default
 immediate delivery, ``close`` is optional.
+
+## Generic wrapper
+
+``ServiceWrapper`` lets you track usage for **any** vendor or service without
+modifying the SDK.  Pass ``vendor`` (and optionally ``service`` or
+``service_key``) and the wrapper builds the service key automatically.
+
+### OpenAI-compatible LLM (zero config)
+
+Any provider that returns a standard ``.usage`` object works out of the box:
+
+```python
+from aicostmanager import ServiceWrapper
+from openai import OpenAI
+
+client = OpenAI(base_url="https://api.together.xyz/v1", api_key="...")
+wrapper = ServiceWrapper(client, vendor="together-ai")
+
+resp = wrapper.chat.completions.create(
+    model="meta-llama/Llama-3-70b-chat-hf",
+    messages=[{"role": "user", "content": "hi"}],
+)
+# Tracked as "together-ai::meta-llama/Llama-3-70b-chat-hf"
+```
+
+### Non-LLM service (custom extractor)
+
+For services that don't follow standard LLM response shapes, provide a custom
+``usage_extractor``:
+
+```python
+from aicostmanager import ServiceWrapper
+from deepgram import DeepgramClient
+
+def extract_deepgram_usage(response):
+    metadata = response.get("metadata", {})
+    return {
+        "duration_seconds": metadata.get("duration"),
+        "channels": metadata.get("channels"),
+        "model": metadata.get("model_info", {}).get("name"),
+    }
+
+dg = DeepgramClient("...")
+wrapper = ServiceWrapper(
+    dg,
+    vendor="deepgram",
+    service="stt",
+    usage_extractor=extract_deepgram_usage,
+)
+result = wrapper.listen.rest.v("1").transcribe_url({"url": "..."})
+# Tracked as "deepgram::stt"
+```
+
+### Fixed service key
+
+Use ``service_key`` to set the exact tracking key for every call:
+
+```python
+wrapper = ServiceWrapper(
+    heygen_client,
+    service_key="heygen::streaming-avatar",
+)
+# Every call tracked as "heygen::streaming-avatar"
+```
+
+### Service key modes
+
+| Parameter | Service key format | Model extraction |
+| --------- | ------------------ | ---------------- |
+| *(default)* | ``{vendor}::{model}`` | From call args |
+| ``service="stt"`` | ``{vendor}::stt`` | Skipped |
+| ``service_key="x::y"`` | ``x::y`` (exact) | Skipped |

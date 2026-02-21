@@ -1,5 +1,6 @@
 """Tests for Tracker.track_batch() and track_batch_async() functionality."""
 
+import asyncio
 import json
 import tempfile
 from datetime import datetime, timezone
@@ -460,8 +461,7 @@ class TestTrackBatch:
 class TestTrackBatchAsync:
     """Test the async version of track_batch."""
 
-    @pytest.mark.asyncio
-    async def test_track_batch_async_basic(self):
+    def test_track_batch_async_basic(self):
         """Test basic functionality of track_batch_async."""
         received = []
 
@@ -490,15 +490,17 @@ class TestTrackBatchAsync:
             }
         ]
 
-        with Tracker(aicm_api_key="test", ini_path="ini", delivery=delivery) as tracker:
-            result = await tracker.track_batch_async(records)
+        async def run():
+            with Tracker(aicm_api_key="test", ini_path="ini", delivery=delivery) as tracker:
+                return await tracker.track_batch_async(records)
+
+        result = asyncio.run(run())
 
         assert len(received) == 1
         assert "results" in result
         assert len(result["results"]) == 1
 
-    @pytest.mark.asyncio
-    async def test_track_batch_async_persistent_delivery(self):
+    def test_track_batch_async_persistent_delivery(self):
         """Test track_batch_async with persistent delivery."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "test_queue.db"
@@ -516,17 +518,19 @@ class TestTrackBatchAsync:
                 }
             ]
 
-            with Tracker(
-                aicm_api_key="test", ini_path="ini", delivery=delivery
-            ) as tracker:
-                result = await tracker.track_batch_async(records)
+            async def run():
+                with Tracker(
+                    aicm_api_key="test", ini_path="ini", delivery=delivery
+                ) as tracker:
+                    return await tracker.track_batch_async(records)
+
+            result = asyncio.run(run())
 
             assert "queued" in result
             assert "response_ids" in result
             assert "async_resp_1" in result["response_ids"]
 
-    @pytest.mark.asyncio
-    async def test_track_batch_async_exceeds_max_batch_size(self):
+    def test_track_batch_async_exceeds_max_batch_size(self):
         """Test track_batch_async raises BatchSizeLimitExceeded when batch size exceeds 1000."""
         from aicostmanager.client.exceptions import BatchSizeLimitExceeded
 
@@ -544,16 +548,18 @@ class TestTrackBatchAsync:
             for i in range(1001)
         ]
 
-        with Tracker(aicm_api_key="test", ini_path="ini", delivery=delivery) as tracker:
-            with pytest.raises(BatchSizeLimitExceeded) as exc_info:
+        async def run():
+            with Tracker(aicm_api_key="test", ini_path="ini", delivery=delivery) as tracker:
                 await tracker.track_batch_async(records)
+
+        with pytest.raises(BatchSizeLimitExceeded) as exc_info:
+            asyncio.run(run())
 
         assert exc_info.value.batch_size == 1001
         assert exc_info.value.max_batch_size == 1000
         assert "1001 exceeds maximum allowed limit of 1000" in str(exc_info.value)
 
-    @pytest.mark.asyncio
-    async def test_track_batch_async_max_batch_size_allowed(self):
+    def test_track_batch_async_max_batch_size_allowed(self):
         """Test track_batch_async allows exactly 1000 records."""
         received = []
 
@@ -578,8 +584,11 @@ class TestTrackBatchAsync:
             for i in range(1000)
         ]
 
-        with Tracker(aicm_api_key="test", ini_path="ini", delivery=delivery) as tracker:
-            result = await tracker.track_batch_async(records)
+        async def run():
+            with Tracker(aicm_api_key="test", ini_path="ini", delivery=delivery) as tracker:
+                return await tracker.track_batch_async(records)
+
+        result = asyncio.run(run())
 
         # Should succeed and make a request
         assert len(received) == 1

@@ -63,6 +63,7 @@ wrappers = importlib.util.module_from_spec(spec)
 sys.modules["aicostmanager.wrappers"] = wrappers
 spec.loader.exec_module(wrappers)
 
+ServiceWrapper = wrappers.ServiceWrapper
 OpenAIChatWrapper = wrappers.OpenAIChatWrapper
 OpenAIResponsesWrapper = wrappers.OpenAIResponsesWrapper
 AnthropicWrapper = wrappers.AnthropicWrapper
@@ -283,3 +284,186 @@ def test_openai_chat_vendor_detection():
     wrapper_x = OpenAIChatWrapper(x_client, tracker=tracker)
     wrapper_x.chat.completions.create(model="m2")
     assert tracker.calls[0][0] == "xai::m2"
+
+
+# ---------------------------------------------------------------------------
+# ServiceWrapper tests
+# ---------------------------------------------------------------------------
+
+
+def test_service_wrapper_custom_extractor():
+    """ServiceWrapper with a custom extractor for non-LLM usage (e.g. STT)."""
+    tracker = DummyTracker()
+
+    def stt_extractor(response):
+        return {
+            "duration_seconds": response.get("duration"),
+            "characters": response.get("characters"),
+        }
+
+    class STTClient:
+        def transcribe(self, audio_url):
+            return {"text": "hello", "duration": 12.5, "characters": 5}
+
+    client = STTClient()
+    wrapper = ServiceWrapper(
+        client,
+        vendor="deepgram",
+        service="stt",
+        tracker=tracker,
+        usage_extractor=stt_extractor,
+    )
+    result = wrapper.transcribe(audio_url="https://example.com/audio.mp3")
+    assert result == {"text": "hello", "duration": 12.5, "characters": 5}
+    assert len(tracker.calls) == 1
+    assert tracker.calls[0][0] == "deepgram::stt"
+    assert tracker.calls[0][1] == {"duration_seconds": 12.5, "characters": 5}
+
+
+def test_service_wrapper_fixed_service():
+    """ServiceWrapper with `service` param produces fixed service key."""
+    tracker = DummyTracker()
+
+    class Client:
+        def call(self, model=None):
+            return types.SimpleNamespace(
+                usage={"prompt_tokens": 10, "completion_tokens": 5}
+            )
+
+    wrapper = ServiceWrapper(
+        Client(),
+        vendor="myvendor",
+        service="embeddings",
+        tracker=tracker,
+    )
+    wrapper.call(model="text-embedding-3")
+    assert tracker.calls[0][0] == "myvendor::embeddings"
+
+
+def test_service_wrapper_service_key_override():
+    """ServiceWrapper with `service_key` param uses exact key."""
+    tracker = DummyTracker()
+
+    class Client:
+        def generate(self):
+            return types.SimpleNamespace(
+                usage={"prompt_tokens": 1, "completion_tokens": 1}
+            )
+
+    wrapper = ServiceWrapper(
+        Client(),
+        service_key="heygen::streaming-avatar",
+        tracker=tracker,
+    )
+    wrapper.generate()
+    assert tracker.calls[0][0] == "heygen::streaming-avatar"
+
+
+def test_service_wrapper_generic_fallback():
+    """ServiceWrapper with no extractor auto-detects .usage attribute."""
+    tracker = DummyTracker()
+
+    class Client:
+        def complete(self, model=None):
+            return types.SimpleNamespace(
+                id="resp-generic",
+                usage={"prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15},
+            )
+
+    wrapper = ServiceWrapper(
+        Client(),
+        vendor="custom-llm",
+        tracker=tracker,
+    )
+    wrapper.complete(model="my-model")
+    assert tracker.calls[0][0] == "custom-llm::my-model"
+    assert tracker.calls[0][1] == {
+        "prompt_tokens": 5,
+        "completion_tokens": 10,
+        "total_tokens": 15,
+    }
+
+
+def test_service_wrapper_generic_fallback_dict_usage():
+    """Generic fallback extracts usage from dict responses."""
+    tracker = DummyTracker()
+
+    class Client:
+        def invoke(self, model=None):
+            return {"usage": {"input_tokens": 3, "output_tokens": 7}, "result": "ok"}
+
+    wrapper = ServiceWrapper(
+        Client(),
+        vendor="some-api",
+        tracker=tracker,
+    )
+    wrapper.invoke(model="v1")
+    assert tracker.calls[0][0] == "some-api::v1"
+    assert tracker.calls[0][1] == {"input_tokens": 3, "output_tokens": 7}
+
+
+def test_service_wrapper_dynamic_model():
+    """ServiceWrapper default mode builds vendor::model from call args."""
+    tracker = DummyTracker()
+
+    class Completions:
+        def create(self, model=None):
+            return types.SimpleNamespace(
+                id="r1",
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            )
+
+    class Client:
+        completions = Completions()
+
+    wrapper = ServiceWrapper(
+        Client(),
+        vendor="together-ai",
+        tracker=tracker,
+    )
+    wrapper.completions.create(model="llama-3-70b")
+    assert tracker.calls[0][0] == "together-ai::llama-3-70b"
+
+
+def test_service_wrapper_streaming_custom_extractor():
+    """ServiceWrapper with custom streaming extractor."""
+    tracker = DummyTracker()
+
+    def streaming_ext(chunk):
+        usage = getattr(chunk, "metrics", None)
+        if usage:
+            return {"duration": usage["duration"]}
+        return {}
+
+    class Client:
+        def stream_transcribe(self):
+            def gen():
+                yield types.SimpleNamespace(text="hello")
+                yield types.SimpleNamespace(
+                    text="world", metrics={"duration": 5.5}
+                )
+
+            return gen()
+
+    wrapper = ServiceWrapper(
+        Client(),
+        vendor="deepgram",
+        service="stt-streaming",
+        tracker=tracker,
+        streaming_usage_extractor=streaming_ext,
+    )
+    chunks = list(wrapper.stream_transcribe())
+    assert len(chunks) == 2
+    assert tracker.calls[0][0] == "deepgram::stt-streaming"
+    assert tracker.calls[0][1] == {"duration": 5.5}
+
+
+def test_service_wrapper_get_vendor_from_override():
+    """_get_vendor parses vendor from service_key override."""
+    tracker = DummyTracker()
+    wrapper = ServiceWrapper(
+        types.SimpleNamespace(),
+        service_key="heygen::avatar",
+        tracker=tracker,
+    )
+    assert wrapper._get_vendor() == "heygen"

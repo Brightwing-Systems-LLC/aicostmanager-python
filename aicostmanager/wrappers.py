@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import AsyncIterable, Iterable, Iterator
-from typing import Any, Callable
+from collections.abc import AsyncIterable, Callable, Iterable, Iterator
+from typing import Any
 
 from .delivery import DeliveryType
 from .tracker import Tracker
-from .usage_utils import get_streaming_usage_from_response, get_usage_from_response
+from .usage_utils import (
+    _KNOWN_EXTRACTORS,
+    _generic_extract_streaming_usage,
+    _generic_extract_usage,
+    get_streaming_usage_from_response,
+    get_usage_from_response,
+)
 
 
 class _Proxy:
     """Recursive proxy that intercepts method calls for tracking."""
 
-    def __init__(self, obj: Any, wrapper: "BaseLLMWrapper") -> None:
+    def __init__(self, obj: Any, wrapper: "ServiceWrapper") -> None:
         object.__setattr__(self, "_obj", obj)
         object.__setattr__(self, "_wrapper", wrapper)
 
@@ -105,16 +111,32 @@ def _should_wrap(obj: Any) -> bool:
     )
 
 
-class BaseLLMWrapper:
-    """Base wrapper that tracks usage for LLM SDK clients."""
+class ServiceWrapper:
+    """Generic wrapper that tracks usage for any vendor's SDK client.
 
-    api_id: str
-    vendor_name: str = ""
+    Supports three service-key modes:
+
+    1. **Dynamic model** (default): ``service_key = "{vendor}::{model}"``
+       where model is extracted from each call's arguments.
+    2. **Fixed service**: Pass ``service="stt-streaming"`` to get
+       ``service_key = "{vendor}::stt-streaming"`` (model extraction skipped).
+    3. **Full override**: Pass ``service_key="heygen::streaming-avatar"``
+       to use that exact string for every call.
+
+    Custom extractors can be provided to handle non-standard response
+    formats.  When omitted, generic heuristics try ``.usage``,
+    ``.usage_metadata``, ``dict["usage"]``, etc.
+    """
 
     def __init__(
         self,
         client: Any,
         *,
+        vendor: str = "",
+        service: str | None = None,
+        service_key: str | None = None,
+        usage_extractor: Callable | None = None,
+        streaming_usage_extractor: Callable | None = None,
         aicm_api_key: str | None = None,
         tracker: Tracker | None = None,
         customer_key: str | None = None,
@@ -124,6 +146,16 @@ class BaseLLMWrapper:
         anonymizer: Callable[[Any], Any] | None = None,
     ) -> None:
         self._client = client
+        self._vendor = vendor
+        self._service = service
+        self._service_key_override = service_key
+
+        # Resolve extractors
+        self._usage_extractor = usage_extractor or _generic_extract_usage
+        self._streaming_usage_extractor = (
+            streaming_usage_extractor or _generic_extract_streaming_usage
+        )
+
         if tracker is None:
             self._tracker = Tracker(
                 aicm_api_key=aicm_api_key,
@@ -182,15 +214,27 @@ class BaseLLMWrapper:
         return None
 
     def _get_vendor(self) -> str:
-        return self.vendor_name
+        if self._service_key_override:
+            # Parse vendor from the override
+            if "::" in self._service_key_override:
+                return self._service_key_override.split("::")[0]
+            return self._service_key_override
+        return self._vendor
 
     def _build_service_key(self, model: str | None) -> str:
+        # Mode 3: Full override
+        if self._service_key_override:
+            return self._service_key_override
         vendor = self._get_vendor()
+        # Mode 2: Fixed service
+        if self._service is not None:
+            return f"{vendor}::{self._service}"
+        # Mode 1: Dynamic model (default)
         model_id = model or "unknown-model"
         return f"{vendor}::{model_id}"
 
     def _track_usage(self, response: Any, model: str | None) -> Any:
-        usage = get_usage_from_response(response, self.api_id)
+        usage = self._usage_extractor(response)
         if usage:
             # Try multiple field names for response ID
             response_id = (
@@ -236,7 +280,7 @@ class BaseLLMWrapper:
                 "AsyncMock",
             )
             if not usage_sent and not is_mock_chunk:
-                usage = get_streaming_usage_from_response(chunk, self.api_id)
+                usage = self._streaming_usage_extractor(chunk)
                 if usage:
                     self._tracker.track(
                         service_key,
@@ -270,7 +314,7 @@ class BaseLLMWrapper:
                 "AsyncMock",
             )
             if not usage_sent and not is_mock_chunk:
-                usage = get_streaming_usage_from_response(chunk, self.api_id)
+                usage = self._streaming_usage_extractor(chunk)
                 if usage:
                     await self._tracker.track_async(
                         service_key,
@@ -286,13 +330,8 @@ class BaseLLMWrapper:
                 break
 
     def _handle_result(self, result: Any, model: str | None):
-        # Special-case: Bedrock streaming returns a dict with an inner "stream"
-        # Replace the inner stream with a wrapped stream that tracks usage once
-        if (
-            getattr(self, "api_id", "") == "amazon-bedrock"
-            and isinstance(result, dict)
-            and "stream" in result
-        ):
+        # Generalized: streaming dict with an inner "stream" key
+        if isinstance(result, dict) and "stream" in result:
             inner_stream = result.get("stream")
             if isinstance(inner_stream, (Iterator, Iterable)) and not isinstance(
                 inner_stream, (str, bytes, bytearray, dict)
@@ -346,9 +385,30 @@ class BaseLLMWrapper:
             pass
 
 
-class OpenAIChatWrapper(BaseLLMWrapper):
-    api_id = "openai_chat"
-    vendor_name = "openai"
+# Keep BaseLLMWrapper as an alias for backward compatibility
+BaseLLMWrapper = ServiceWrapper
+
+
+# ---------------------------------------------------------------------------
+# Named wrappers — thin aliases with pre-configured vendor + extractors
+# ---------------------------------------------------------------------------
+def _extractors_for(api_id: str) -> tuple[Callable, Callable]:
+    """Look up known extractors or fall back to generic ones."""
+    return _KNOWN_EXTRACTORS.get(
+        api_id, (_generic_extract_usage, _generic_extract_streaming_usage)
+    )
+
+
+class OpenAIChatWrapper(ServiceWrapper):
+    def __init__(self, client: Any, **kwargs: Any) -> None:
+        ext, sext = _extractors_for("openai_chat")
+        super().__init__(
+            client,
+            vendor="openai",
+            usage_extractor=ext,
+            streaming_usage_extractor=sext,
+            **kwargs,
+        )
 
     def _get_vendor(self) -> str:  # pragma: no cover - simple logic
         base_url = getattr(self._client, "base_url", "")
@@ -364,29 +424,64 @@ class OpenAIChatWrapper(BaseLLMWrapper):
         return "openai"
 
 
-class OpenAIResponsesWrapper(BaseLLMWrapper):
-    api_id = "openai_responses"
-    vendor_name = "openai"
+class OpenAIResponsesWrapper(ServiceWrapper):
+    def __init__(self, client: Any, **kwargs: Any) -> None:
+        ext, sext = _extractors_for("openai_responses")
+        super().__init__(
+            client,
+            vendor="openai",
+            usage_extractor=ext,
+            streaming_usage_extractor=sext,
+            **kwargs,
+        )
 
 
-class AnthropicWrapper(BaseLLMWrapper):
-    api_id = "anthropic"
-    vendor_name = "anthropic"
+class AnthropicWrapper(ServiceWrapper):
+    def __init__(self, client: Any, **kwargs: Any) -> None:
+        ext, sext = _extractors_for("anthropic")
+        super().__init__(
+            client,
+            vendor="anthropic",
+            usage_extractor=ext,
+            streaming_usage_extractor=sext,
+            **kwargs,
+        )
 
 
-class GeminiWrapper(BaseLLMWrapper):
-    api_id = "gemini"
-    vendor_name = "google"
+class GeminiWrapper(ServiceWrapper):
+    def __init__(self, client: Any, **kwargs: Any) -> None:
+        ext, sext = _extractors_for("gemini")
+        super().__init__(
+            client,
+            vendor="google",
+            usage_extractor=ext,
+            streaming_usage_extractor=sext,
+            **kwargs,
+        )
 
 
-class BedrockWrapper(BaseLLMWrapper):
-    api_id = "amazon-bedrock"
-    vendor_name = "amazon-bedrock"
+class BedrockWrapper(ServiceWrapper):
+    def __init__(self, client: Any, **kwargs: Any) -> None:
+        ext, sext = _extractors_for("amazon-bedrock")
+        super().__init__(
+            client,
+            vendor="amazon-bedrock",
+            usage_extractor=ext,
+            streaming_usage_extractor=sext,
+            **kwargs,
+        )
 
 
-class FireworksWrapper(BaseLLMWrapper):
-    api_id = "fireworks-ai"
-    vendor_name = "fireworks-ai"
+class FireworksWrapper(ServiceWrapper):
+    def __init__(self, client: Any, **kwargs: Any) -> None:
+        ext, sext = _extractors_for("fireworks-ai")
+        super().__init__(
+            client,
+            vendor="fireworks-ai",
+            usage_extractor=ext,
+            streaming_usage_extractor=sext,
+            **kwargs,
+        )
 
     def _extract_model(self, method: Any, args: tuple, kwargs: dict) -> str | None:
         # First try the standard extraction from call parameters
@@ -403,6 +498,8 @@ class FireworksWrapper(BaseLLMWrapper):
 
 
 __all__ = [
+    "ServiceWrapper",
+    "BaseLLMWrapper",
     "OpenAIChatWrapper",
     "OpenAIResponsesWrapper",
     "AnthropicWrapper",

@@ -114,3 +114,41 @@ def test_track_llm_stream_usage_async():
     record = delivery.records[0]
     assert record["payload"] == {"input_tokens": 4}
     assert record["service_key"] == "openai::gpt-5-mini"
+
+
+def test_track_llm_usage_unknown_vendor():
+    """Unknown vendors fall through to generic extraction via .usage."""
+    delivery = DummyDelivery()
+    tracker = Tracker(delivery=delivery, ini_path="ini")
+
+    resp = Resp({"duration_seconds": 12.5, "characters": 42}, model=None)
+    out = tracker.track_llm_usage("custom-vendor::stt", resp)
+    assert out is resp
+    tracker.close()
+
+    record = delivery.records[0]
+    assert record["payload"] == {"duration_seconds": 12.5, "characters": 42}
+    assert record["service_key"] == "custom-vendor::stt"
+
+
+def test_track_llm_usage_unknown_vendor_dict_response():
+    """Unknown vendors with dict responses use generic dict extraction."""
+    delivery = DummyDelivery()
+    tracker = Tracker(delivery=delivery, ini_path="ini")
+
+    resp_dict = {"usage": {"input_tokens": 10, "output_tokens": 20}}
+    # track_llm_usage expects an object, but generic extractor handles dicts too
+    # We need to wrap it so setattr works for metadata attachment
+    class DictResp:
+        def __init__(self, data):
+            self._data = data
+            self.usage = data["usage"]
+
+    resp = DictResp(resp_dict)
+    out = tracker.track_llm_usage("unknown-provider::my-model", resp)
+    assert out is resp
+    tracker.close()
+
+    record = delivery.records[0]
+    assert record["payload"] == {"input_tokens": 10, "output_tokens": 20}
+    assert record["service_key"] == "unknown-provider::my-model"

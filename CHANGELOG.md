@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-02-21
+
+### Added
+- **Generic `ServiceWrapper`**: New wrapper class that supports any vendor or
+  service with zero SDK changes.  Pass `vendor="whatever"` and an optional
+  extractor lambda to track arbitrary services (STT, TTS, video, embeddings,
+  OpenAI-compatible LLMs, etc.).
+  - Three service-key modes: dynamic model (`vendor::model` from call args),
+    fixed service (`vendor::stt`), and full override (`heygen::streaming-avatar`).
+  - Custom `usage_extractor` and `streaming_usage_extractor` callbacks for
+    non-standard response formats.
+  - Generic fallback extractors that auto-detect `.usage`, `.usage_metadata`,
+    `dict["usage"]`, and token-count fields when no extractor is provided.
+- Exported `ServiceWrapper` from `aicostmanager` package.
+- Documentation for generic wrapper usage with examples for OpenAI-compatible
+  LLMs, non-LLM services (Deepgram STT), and fixed service keys.
+
+### Changed
+- **Refactored `usage_utils.py`**: Split monolithic `if api_id == ...` chains
+  into standalone extractor functions (`_extract_openai_usage`,
+  `_extract_anthropic_usage`, `_extract_bedrock_usage`,
+  `_extract_gemini_usage`) with a `_KNOWN_EXTRACTORS` registry.
+  `get_usage_from_response` and `get_streaming_usage_from_response` now
+  dispatch through the registry with generic fallback for unknown vendors.
+- **Refactored `wrappers.py`**: `BaseLLMWrapper` replaced by `ServiceWrapper`
+  (kept as alias for backward compatibility).  Named wrappers
+  (`OpenAIChatWrapper`, `AnthropicWrapper`, etc.) are now thin `__init__`
+  overrides with pre-configured vendor and extractors.
+- **Centralized vendor mappings**: `VENDOR_TO_API` and `API_TO_VENDOR` dicts
+  moved to `usage_utils.py` as canonical source of truth; `tracker.py` imports
+  them instead of defining inline copies.
+- Generalized Bedrock dict-with-stream detection in `_handle_result` — removed
+  the `api_id == "amazon-bedrock"` guard in favor of a generic
+  `isinstance(result, dict) and "stream" in result` check.
+
+### Fixed
+- **`TestTrackBatchAsync` tests**: Converted from `@pytest.mark.asyncio`
+  (requires uninstalled plugin) to `asyncio.run()` pattern matching the rest
+  of the codebase.  All 4 tests now pass without `pytest-asyncio`.
+
 ## [0.2.1] - 2026-02-19
 
 ### Fixed

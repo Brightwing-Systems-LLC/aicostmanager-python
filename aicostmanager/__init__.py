@@ -1,6 +1,6 @@
 """Python SDK for the AICostManager API."""
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 from .client import (
     AICMError,
@@ -32,6 +32,7 @@ from .wrappers import (
     GeminiWrapper,
     OpenAIChatWrapper,
     OpenAIResponsesWrapper,
+    ServiceWrapper,
 )
 
 __all__ = [
@@ -55,6 +56,7 @@ __all__ = [
     "BaseLimitManager",
     "TriggeredLimitManager",
     "UsageLimitManager",
+    "ServiceWrapper",
     "OpenAIChatWrapper",
     "OpenAIResponsesWrapper",
     "AnthropicWrapper",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 
@@ -249,103 +249,266 @@ def _coerce_mapping(obj: Any) -> dict:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Vendor <-> API ID mapping dicts (canonical source of truth)
+# ---------------------------------------------------------------------------
+VENDOR_TO_API: dict[str, str] = {
+    "openai": "openai_chat",
+    "anthropic": "anthropic",
+    "amazon-bedrock": "amazon-bedrock",
+    "fireworks-ai": "fireworks-ai",
+    "xai": "openai_chat",  # X.AI uses OpenAI-compatible API
+    "google": "gemini",
+}
+
+API_TO_VENDOR: dict[str, str] = {
+    "openai_chat": "openai",
+    "openai_responses": "openai",
+    "fireworks-ai": "fireworks-ai",
+    "anthropic": "anthropic",
+    "amazon-bedrock": "amazon-bedrock",
+    "gemini": "google",
+}
+
+
+# ---------------------------------------------------------------------------
+# Standalone extractor functions
+# ---------------------------------------------------------------------------
+def _extract_openai_usage(response: Any) -> dict[str, Any]:
+    """Extract usage from OpenAI / OpenAI-compatible responses."""
+    usage = getattr(response, "usage", None)
+    return _to_serializable_dict(usage)
+
+
+def _extract_openai_streaming_usage(chunk: Any) -> dict[str, Any]:
+    """Extract usage from OpenAI / OpenAI-compatible streaming chunks."""
+    # Some SDKs put usage directly on the event
+    usage = getattr(chunk, "usage", None)
+    # Responses API events often nest usage on the inner .response
+    if (
+        not usage
+        and hasattr(chunk, "response")
+        and hasattr(chunk.response, "usage")
+    ):
+        usage = getattr(chunk.response, "usage")
+    # Raw/dict fallbacks
+    if not usage and isinstance(chunk, Mapping):
+        usage = chunk.get("usage") or (chunk.get("response", {}) or {}).get("usage")
+    return _to_serializable_dict(usage)
+
+
+def _extract_anthropic_usage(response: Any) -> dict[str, Any]:
+    """Extract usage from Anthropic responses (response IS usage edge case)."""
+    usage = (
+        response if not hasattr(response, "usage") else getattr(response, "usage")
+    )
+    return _to_serializable_dict(usage)
+
+
+def _extract_anthropic_streaming_usage(chunk: Any) -> dict[str, Any]:
+    """Extract usage from Anthropic streaming chunks."""
+    usage: Any = None
+    if hasattr(chunk, "usage"):
+        usage = getattr(chunk, "usage")
+    elif hasattr(chunk, "message") and hasattr(chunk.message, "usage"):
+        usage = getattr(chunk.message, "usage")
+    return _to_serializable_dict(usage)
+
+
+def _extract_bedrock_usage(response: Any) -> dict[str, Any]:
+    """Extract usage from Bedrock responses (dict-based access)."""
+    usage: Any = None
+    if isinstance(response, Mapping):
+        if "usage" in response:
+            usage = response["usage"]
+        elif all(
+            k in response for k in ("inputTokens", "outputTokens", "totalTokens")
+        ):
+            usage = response
+        elif "ResponseMetadata" in response and "usage" in response:
+            usage = response.get("usage")
+    else:
+        usage = getattr(response, "usage", None)
+    return _to_serializable_dict(usage)
+
+
+def _extract_bedrock_streaming_usage(chunk: Any) -> dict[str, Any]:
+    """Extract usage from Bedrock streaming chunks."""
+    usage: Any = None
+    if isinstance(chunk, Mapping):
+        if "metadata" in chunk and "usage" in chunk["metadata"]:
+            usage = chunk["metadata"]["usage"]
+        elif "usage" in chunk:
+            usage = chunk["usage"]
+    return _to_serializable_dict(usage)
+
+
+def _extract_gemini_usage(response: Any) -> dict[str, Any]:
+    """Extract usage from Gemini responses."""
+    # Try both camelCase and snake_case variants
+    usage = getattr(response, "usageMetadata", None) or getattr(
+        response, "usage_metadata", None
+    )
+    if usage is not None:
+        return _normalize_gemini_usage(usage)
+    return _to_serializable_dict(usage)
+
+
+def _extract_gemini_streaming_usage(chunk: Any) -> dict[str, Any]:
+    """Extract usage from Gemini streaming chunks."""
+    meta = None
+
+    # 1) direct on the event (both variants)
+    meta = getattr(chunk, "usageMetadata", None) or getattr(
+        chunk, "usage_metadata", None
+    )
+
+    # 2) sometimes nested under .model_response
+    if meta is None and hasattr(chunk, "model_response"):
+        meta = getattr(chunk.model_response, "usageMetadata", None) or getattr(
+            chunk.model_response, "usage_metadata", None
+        )
+
+    # 3) dict-like fallback
+    if meta is None and isinstance(chunk, Mapping):
+        model_resp = chunk.get("model_response")
+        meta = (
+            chunk.get("usageMetadata")
+            or chunk.get("usage_metadata")
+            or (model_resp or {}).get("usageMetadata")
+            or (model_resp or {}).get("usage_metadata")
+            if isinstance(model_resp, Mapping)
+            else None
+        )
+
+    if meta is not None:
+        return _normalize_gemini_usage(meta)
+    return _to_serializable_dict(meta)
+
+
+# ---------------------------------------------------------------------------
+# Generic fallback extractors (no api_id needed)
+# ---------------------------------------------------------------------------
+def _generic_extract_usage(response: Any) -> dict[str, Any]:
+    """Try common patterns to extract usage from any response object."""
+    # 1) .usage attribute (OpenAI, Anthropic, most SDKs)
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        return _to_serializable_dict(usage)
+
+    # 2) .usage_metadata / .usageMetadata (Gemini-style)
+    usage = getattr(response, "usage_metadata", None) or getattr(
+        response, "usageMetadata", None
+    )
+    if usage is not None:
+        return _to_serializable_dict(usage)
+
+    # 3) dict["usage"]
+    if isinstance(response, Mapping):
+        usage = response.get("usage")
+        if usage is not None:
+            return _to_serializable_dict(usage)
+
+    # 4) response itself looks like usage data (has token count fields)
+    if isinstance(response, Mapping) and any(
+        k in response
+        for k in (
+            "input_tokens",
+            "output_tokens",
+            "prompt_tokens",
+            "completion_tokens",
+            "inputTokens",
+            "outputTokens",
+            "total_tokens",
+            "totalTokens",
+        )
+    ):
+        return _to_serializable_dict(response)
+
+    return {}
+
+
+def _generic_extract_streaming_usage(chunk: Any) -> dict[str, Any]:
+    """Try common patterns to extract usage from any streaming chunk."""
+    # 1) .usage attribute
+    usage = getattr(chunk, "usage", None)
+    if usage is not None:
+        return _to_serializable_dict(usage)
+
+    # 2) .response.usage (OpenAI Responses API style)
+    if hasattr(chunk, "response") and hasattr(chunk.response, "usage"):
+        usage = getattr(chunk.response, "usage")
+        if usage is not None:
+            return _to_serializable_dict(usage)
+
+    # 3) .message.usage (Anthropic style)
+    if hasattr(chunk, "message") and hasattr(chunk.message, "usage"):
+        usage = getattr(chunk.message, "usage")
+        if usage is not None:
+            return _to_serializable_dict(usage)
+
+    # 4) .usage_metadata / .usageMetadata (Gemini style)
+    usage = getattr(chunk, "usage_metadata", None) or getattr(
+        chunk, "usageMetadata", None
+    )
+    if usage is not None:
+        return _to_serializable_dict(usage)
+
+    # 5) dict["usage"]
+    if isinstance(chunk, Mapping):
+        usage = chunk.get("usage")
+        if usage is not None:
+            return _to_serializable_dict(usage)
+
+    # 6) dict["metadata"]["usage"] (Bedrock style)
+    if isinstance(chunk, Mapping):
+        metadata = chunk.get("metadata")
+        if isinstance(metadata, Mapping):
+            usage = metadata.get("usage")
+            if usage is not None:
+                return _to_serializable_dict(usage)
+
+    return {}
+
+
+# ---------------------------------------------------------------------------
+# Extractor registry
+# ---------------------------------------------------------------------------
+_KNOWN_EXTRACTORS: dict[str, tuple[Callable, Callable]] = {
+    "openai_chat": (_extract_openai_usage, _extract_openai_streaming_usage),
+    "openai_responses": (_extract_openai_usage, _extract_openai_streaming_usage),
+    "anthropic": (_extract_anthropic_usage, _extract_anthropic_streaming_usage),
+    "gemini": (_extract_gemini_usage, _extract_gemini_streaming_usage),
+    "amazon-bedrock": (_extract_bedrock_usage, _extract_bedrock_streaming_usage),
+    "fireworks-ai": (_extract_openai_usage, _extract_openai_streaming_usage),
+}
+
+
+# ---------------------------------------------------------------------------
+# Public dispatch functions (used by tracker convenience methods)
+# ---------------------------------------------------------------------------
 def get_usage_from_response(response: Any, api_id: str) -> dict[str, Any]:
     """Return JSON-serializable usage info from an API response."""
-    usage: Any = None
-    if api_id in {"openai_chat", "openai_responses", "fireworks-ai"}:
-        usage = getattr(response, "usage", None)
-    elif api_id == "anthropic":
-        usage = (
-            response if not hasattr(response, "usage") else getattr(response, "usage")
-        )
-    elif api_id == "amazon-bedrock":
-        if isinstance(response, Mapping):
-            if "usage" in response:
-                usage = response["usage"]
-            elif all(
-                k in response for k in ("inputTokens", "outputTokens", "totalTokens")
-            ):
-                usage = response
-            elif "ResponseMetadata" in response and "usage" in response:
-                usage = response.get("usage")
-        else:
-            usage = getattr(response, "usage", None)
-    elif api_id == "gemini":
-        # Try both camelCase and snake_case variants
-        usage = getattr(response, "usageMetadata", None) or getattr(
-            response, "usage_metadata", None
-        )
-        # If found, normalize to our standardized format
-        if usage is not None:
-            return _normalize_gemini_usage(usage)
-    return _to_serializable_dict(usage)
+    extractor, _ = _KNOWN_EXTRACTORS.get(
+        api_id, (_generic_extract_usage, _generic_extract_streaming_usage)
+    )
+    return extractor(response)
 
 
 def get_streaming_usage_from_response(chunk: Any, api_id: str) -> dict[str, Any]:
     """Extract usage information from streaming response chunks."""
-    usage: Any = None
-    if api_id in {"openai_chat", "openai_responses", "fireworks-ai"}:
-        # Some SDKs put usage directly on the event
-        usage = getattr(chunk, "usage", None)
-        # Responses API events often nest usage on the inner .response
-        if (
-            not usage
-            and hasattr(chunk, "response")
-            and hasattr(chunk.response, "usage")
-        ):
-            usage = getattr(chunk.response, "usage")
-        # Raw/dict fallbacks
-        if not usage and isinstance(chunk, Mapping):
-            usage = chunk.get("usage") or (chunk.get("response", {}) or {}).get("usage")
-
-    elif api_id == "anthropic":
-        if hasattr(chunk, "usage"):
-            usage = getattr(chunk, "usage")
-        elif hasattr(chunk, "message") and hasattr(chunk.message, "usage"):
-            usage = getattr(chunk.message, "usage")
-
-    elif api_id == "amazon-bedrock":
-        if isinstance(chunk, Mapping):
-            if "metadata" in chunk and "usage" in chunk["metadata"]:
-                usage = chunk["metadata"]["usage"]
-            elif "usage" in chunk:
-                usage = chunk["usage"]
-
-    elif api_id == "gemini":
-        # Try multiple locations for usage metadata, both camelCase and snake_case
-        meta = None
-
-        # 1) direct on the event (both variants)
-        meta = getattr(chunk, "usageMetadata", None) or getattr(
-            chunk, "usage_metadata", None
-        )
-
-        # 2) sometimes nested under .model_response
-        if meta is None and hasattr(chunk, "model_response"):
-            meta = getattr(chunk.model_response, "usageMetadata", None) or getattr(
-                chunk.model_response, "usage_metadata", None
-            )
-
-        # 3) dict-like fallback
-        if meta is None and isinstance(chunk, Mapping):
-            model_resp = chunk.get("model_response")
-            meta = (
-                chunk.get("usageMetadata")
-                or chunk.get("usage_metadata")
-                or (model_resp or {}).get("usageMetadata")
-                or (model_resp or {}).get("usage_metadata")
-                if isinstance(model_resp, Mapping)
-                else None
-            )
-
-        # If found, normalize to our standardized format
-        if meta is not None:
-            return _normalize_gemini_usage(meta)
-
-    return _to_serializable_dict(usage)
+    _, streaming_extractor = _KNOWN_EXTRACTORS.get(
+        api_id, (_generic_extract_usage, _generic_extract_streaming_usage)
+    )
+    return streaming_extractor(chunk)
 
 
 __all__ = [
     "get_usage_from_response",
     "get_streaming_usage_from_response",
+    "VENDOR_TO_API",
+    "API_TO_VENDOR",
+    "_KNOWN_EXTRACTORS",
+    "_generic_extract_usage",
+    "_generic_extract_streaming_usage",
 ]
