@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.2] - 2026-10-25
+
+### Fixed
+- **Anthropic `messages.stream()` is tracked.** The helper returns a context
+  manager, which the proxy could not read usage from, so these calls were never
+  tracked. `AnthropicWrapper` now wraps the manager (sync and async, including
+  `beta.messages.stream()`) and tracks the stream's accumulated message once on
+  exit, with its message id as the response id. A block left early is tracked
+  with the usage reached so far, since its input was billed.
+- **Anthropic `messages.create(stream=True)` records the full usage.** The first
+  event carrying usage (`message_start`, output ≈ 1 token) used to be tracked
+  and the final `message_delta` output count ignored. The two are now merged
+  and tracked once when the stream ends, with the message id as the response id.
+- **Async methods that `inspect.iscoroutinefunction` misses are tracked.** A
+  decorated async method (such as `AsyncAnthropic().messages.create`) returned
+  an un-awaited coroutine to `_handle_result`, which tracked the coroutine's
+  string form as usage and never the response. Awaitables are now awaited and
+  their result handled like any other async result.
+- Anthropic stream events keep the customer key and context set when the call
+  was made, not whatever they are when the stream ends.
+
 ## [0.3.1] - 2026-02-23
 
 ### Fixed
