@@ -347,6 +347,11 @@ class ServiceWrapper:
             "AsyncMock",
         ):
             return self._track_usage(result, model)
+        if inspect.isawaitable(result):
+            # An async SDK method that ``inspect.iscoroutinefunction`` misses
+            # (a decorated one, like AsyncAnthropic's ``messages.create``)
+            # returns a coroutine; track what it resolves to, not the coroutine.
+            return self._await_result(result, model)
         if isinstance(result, AsyncIterable):
             return self._wrap_stream_async(result, model)
         if isinstance(result, Iterator) and not isinstance(
@@ -354,6 +359,9 @@ class ServiceWrapper:
         ):
             return self._wrap_stream(result, model)
         return self._track_usage(result, model)
+
+    async def _await_result(self, awaitable: Any, model: str | None):
+        return await self._handle_async_result(await awaitable, model)
 
     async def _handle_async_result(self, result: Any, model: str | None):
         # Don't treat Mock objects as iterables even if they claim to be
@@ -436,7 +444,26 @@ class OpenAIResponsesWrapper(ServiceWrapper):
         )
 
 
+_ANTHROPIC_STREAM_MANAGERS = ("MessageStreamManager", "BetaMessageStreamManager")
+_ANTHROPIC_ASYNC_STREAM_MANAGERS = (
+    "AsyncMessageStreamManager",
+    "BetaAsyncMessageStreamManager",
+)
+
+
 class AnthropicWrapper(ServiceWrapper):
+    """Tracks Anthropic calls, including both kinds of streaming.
+
+    ``messages.stream()`` returns a context manager rather than a response or
+    an iterator; it is wrapped so the message its stream accumulated is
+    tracked once on exit. ``messages.create(stream=True)`` spreads usage over
+    ``message_start`` (input) and ``message_delta`` (cumulative output); the
+    two are merged and tracked once when the stream ends. Either way a stream
+    left early is tracked with the usage it had reached, since its input was
+    billed, and the event keeps the customer and context of the call that
+    opened it.
+    """
+
     def __init__(self, client: Any, **kwargs: Any) -> None:
         ext, sext = _extractors_for("anthropic")
         super().__init__(
@@ -446,6 +473,196 @@ class AnthropicWrapper(ServiceWrapper):
             streaming_usage_extractor=sext,
             **kwargs,
         )
+
+    def _handle_result(self, result: Any, model: str | None):
+        name = type(result).__name__
+        if name in _ANTHROPIC_STREAM_MANAGERS:
+            return _TrackedMessageStreamManager(result, self._bind(model))
+        if name in _ANTHROPIC_ASYNC_STREAM_MANAGERS:
+            return _TrackedAsyncMessageStreamManager(result, self._bind(model))
+        return super()._handle_result(result, model)
+
+    def _bind(self, model: str | None) -> "_BoundTracking":
+        return _BoundTracking(
+            self,
+            self._build_service_key(model),
+            self.customer_key,
+            dict(self.context) if self.context is not None else None,
+        )
+
+    def _wrap_stream(self, stream: Iterable, model: str | None) -> Iterable:
+        bound = self._bind(model)
+        merged = _MergedStreamUsage()
+        completed = False
+        try:
+            for chunk in stream:
+                merged.add(chunk, self._streaming_usage_extractor)
+                yield chunk
+            completed = True
+        finally:
+            bound.track(merged.usage, merged.response_id, failing=not completed)
+
+    async def _wrap_stream_async(self, stream: AsyncIterable, model: str | None):
+        bound = self._bind(model)
+        merged = _MergedStreamUsage()
+        completed = False
+        try:
+            async for chunk in stream:
+                merged.add(chunk, self._streaming_usage_extractor)
+                yield chunk
+            completed = True
+        finally:
+            await bound.track_async(
+                merged.usage, merged.response_id, failing=not completed
+            )
+
+
+class _BoundTracking:
+    """One Anthropic call's service key, customer and context, fixed at call time."""
+
+    def __init__(
+        self,
+        wrapper: ServiceWrapper,
+        service_key: str,
+        customer_key: str | None,
+        context: dict[str, Any] | None,
+    ) -> None:
+        self._wrapper = wrapper
+        self._service_key = service_key
+        self._customer_key = customer_key
+        self._context = context
+
+    def _kwargs(self, response_id: str | None) -> dict[str, Any]:
+        return {
+            "response_id": response_id,
+            "customer_key": self._customer_key,
+            "context": self._context,
+            "anonymize_fields": self._wrapper._anonymize_fields,
+            "anonymizer": self._wrapper._anonymizer,
+        }
+
+    def track(self, usage: dict, response_id: str | None, *, failing: bool) -> None:
+        # While the caller's own error or close is unwinding, a tracking
+        # failure must not replace it.
+        if not usage:
+            return
+        try:
+            self._wrapper._tracker.track(
+                self._service_key, usage, **self._kwargs(response_id)
+            )
+        except Exception:
+            if not failing:
+                raise
+
+    async def track_async(
+        self, usage: dict, response_id: str | None, *, failing: bool
+    ) -> None:
+        if not usage:
+            return
+        try:
+            await self._wrapper._tracker.track_async(
+                self._service_key, usage, **self._kwargs(response_id)
+            )
+        except Exception:
+            if not failing:
+                raise
+
+    def track_message(self, stream: Any, *, failing: bool) -> None:
+        message = _message_snapshot(stream)
+        if message is not None:
+            self.track(
+                self._wrapper._usage_extractor(message),
+                getattr(message, "id", None),
+                failing=failing,
+            )
+
+    async def track_message_async(self, stream: Any, *, failing: bool) -> None:
+        message = _message_snapshot(stream)
+        if message is not None:
+            await self.track_async(
+                self._wrapper._usage_extractor(message),
+                getattr(message, "id", None),
+                failing=failing,
+            )
+
+
+def _message_snapshot(stream: Any) -> Any:
+    """The message a ``MessageStream`` has accumulated, or ``None`` before
+    ``message_start`` (the SDK asserts in that case)."""
+    try:
+        return stream.current_message_snapshot
+    except (AssertionError, AttributeError):
+        return None
+
+
+class _MergedStreamUsage:
+    """Usage across a raw Anthropic event stream: later non-null fields win,
+    so ``message_delta``'s cumulative ``output_tokens`` replaces the
+    placeholder count ``message_start`` carries."""
+
+    def __init__(self) -> None:
+        self.usage: dict[str, Any] = {}
+        self.response_id: str | None = None
+
+    def add(self, chunk: Any, extractor: Callable) -> None:
+        if hasattr(chunk, "_mock_name") or type(chunk).__name__ in (
+            "Mock",
+            "MagicMock",
+            "AsyncMock",
+        ):
+            return
+        if getattr(chunk, "type", None) == "message_start":
+            self.response_id = getattr(getattr(chunk, "message", None), "id", None)
+        usage = extractor(chunk)
+        if isinstance(usage, dict):
+            # The extractor serializes a null field as ``{}``.
+            self.usage.update(
+                {k: v for k, v in usage.items() if v is not None and v != {}}
+            )
+
+
+class _TrackedMessageStreamManager:
+    """An Anthropic ``MessageStreamManager`` that tracks its message on exit."""
+
+    def __init__(self, manager: Any, bound: _BoundTracking) -> None:
+        self._manager = manager
+        self._bound = bound
+        self._stream: Any = None
+
+    def __enter__(self) -> Any:
+        self._stream = self._manager.__enter__()
+        return self._stream
+
+    def __exit__(self, exc_type, exc, traceback) -> Any:
+        suppressed = self._manager.__exit__(exc_type, exc, traceback)
+        self._bound.track_message(self._stream, failing=exc_type is not None)
+        return suppressed
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._manager, name)
+
+
+class _TrackedAsyncMessageStreamManager:
+    """An Anthropic ``AsyncMessageStreamManager`` that tracks its message on exit."""
+
+    def __init__(self, manager: Any, bound: _BoundTracking) -> None:
+        self._manager = manager
+        self._bound = bound
+        self._stream: Any = None
+
+    async def __aenter__(self) -> Any:
+        self._stream = await self._manager.__aenter__()
+        return self._stream
+
+    async def __aexit__(self, exc_type, exc, traceback) -> Any:
+        suppressed = await self._manager.__aexit__(exc_type, exc, traceback)
+        await self._bound.track_message_async(
+            self._stream, failing=exc_type is not None
+        )
+        return suppressed
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._manager, name)
 
 
 class GeminiWrapper(ServiceWrapper):
