@@ -108,16 +108,29 @@ async def track(payload: dict) -> dict:
 ```
 
 
-## Vendor & Service Lookup
+## Model Catalog
 
-You can retrieve available vendors and their services:
+`list_models()` returns every model in the AICM pricing catalog, across all
+providers, with its current rates, context window and capabilities. It needs
+no API key of its own. The full catalog is over 10,000 models, so to watch for
+new models, pass `since` and keep the newest `first_seen_at` for the next call:
 
 ```python
-vendors = client.list_vendors()
-for vendor in vendors:
-    print(vendor.name)
-    services = client.list_vendor_services(vendor.uuid)
-    for svc in services:
-        print(" -", svc.service_id)
+from datetime import datetime, timezone
+
+models = client.list_models()                      # everything
+anthropic = client.list_models(provider="anthropic")
+
+cursor = datetime(2026, 11, 1, tzinfo=timezone.utc)
+new = client.list_models(since=cursor)             # first listed at or after cursor
+for m in new:
+    print(m.id, m.input_price and m.input_price.cost, m.first_seen_at)
+if new:
+    cursor = max(m.first_seen_at for m in new)
+
+model = client.get_model("anthropic::claude-fable-5-1")
 ```
+
+`since` takes a `datetime`, a `date` or an ISO 8601 string; a time without a
+zone is UTC. A model's `id` is the service key usage is tracked under.
 

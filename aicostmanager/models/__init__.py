@@ -32,7 +32,7 @@ from .custom_services import (
 )
 from .customers import CustomerFilters, CustomerIn, CustomerOut
 from .limits import LimitEventOut, UsageLimitIn, UsageLimitOut, UsageLimitProgressOut
-from .services import CostUnitOut, ServiceOut, VendorOut
+from .pricing import CostUnitOut, PricingModel, PricingModelMetadata
 from .usage import (
     RollupFilters,
     UsageEvent,
@@ -71,11 +71,12 @@ __all__ = [
     "Granularity",
     "LimitEventOut",
     "PaginatedResponse",
+    "PricingModel",
+    "PricingModelMetadata",
     "Period",
     "RollupFilters",
     "ServiceConfigItem",
     "ServiceConfigListResponse",
-    "ServiceOut",
     "ThresholdType",
     "TrackRequest",
     "TrackResponse",
@@ -90,7 +91,6 @@ __all__ = [
     "UsageLimitProgressOut",
     "UsageRollup",
     "ValidationError",
-    "VendorOut",
     "WebhookEndpointCreate",
     "WebhookEndpointOut",
     "WebhookEndpointsResponse",

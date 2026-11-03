@@ -8,16 +8,15 @@ from pydantic import BaseModel, ConfigDict
 class WebhookEndpointOut(BaseModel):
     """Schema for webhook endpoint response"""
 
+    uuid: str
     url: str
-    secret: str
+    purpose: str = "limit_notification"
     active: bool = True
     tolerance: int = 300
-    uuid: str
-    team_uuid: str
-    created_at: str  # datetime string
-    updated_at: str  # datetime string
+    created_at: str
+    updated_at: str
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
 
 
 class WebhookEndpointCreate(BaseModel):
@@ -25,6 +24,7 @@ class WebhookEndpointCreate(BaseModel):
 
     url: str
     secret: str
+    purpose: str = "limit_notification"
     active: bool = True
     tolerance: int = 300
 
@@ -32,7 +32,7 @@ class WebhookEndpointCreate(BaseModel):
 
 
 class WebhookEndpointsResponse(BaseModel):
-    """Response schema for list of webhook endpoints"""
+    """The team's webhook endpoints, with counts computed by the client."""
 
     endpoints: List[WebhookEndpointOut]
     total_count: int
@@ -46,6 +46,7 @@ class WebhookEndpointUpdate(BaseModel):
 
     url: Optional[str] = None
     secret: Optional[str] = None
+    purpose: Optional[str] = None
     active: Optional[bool] = None
     tolerance: Optional[int] = None
 

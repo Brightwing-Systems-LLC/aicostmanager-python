@@ -9,7 +9,6 @@ from ..models import (
     ApiCostEventOut,
     CostEventFilters,
     CostEventsResponse,
-    CostUnitOut,
     CustomerFilters,
     CustomerIn,
     CustomerOut,
@@ -18,21 +17,20 @@ from ..models import (
     CustomServiceOut,
     CustomServiceSummaryOut,
     PaginatedResponse,
+    PricingModel,
     RollupFilters,
-    ServiceOut,
     UsageEvent,
     UsageEventFilters,
     UsageLimitIn,
     UsageLimitOut,
     UsageLimitProgressOut,
     UsageRollup,
-    VendorOut,
     WebhookEndpointCreate,
     WebhookEndpointOut,
     WebhookEndpointsResponse,
     WebhookEndpointUpdate,
 )
-from .base import BaseClient
+from .base import BaseClient, catalog_params, webhooks_response
 from .exceptions import APIRequestError
 
 
@@ -283,25 +281,27 @@ class CostManagerClient(BaseClient):
         data = self._request("GET", "/usage-limits/progress/")
         return [UsageLimitProgressOut.model_validate(i) for i in data]
 
-    def list_vendors(self) -> Iterable[VendorOut]:
-        data = self._request("GET", "/vendors/")
-        return [VendorOut.model_validate(i) for i in data]
+    # Pricing catalog
+    def list_models(
+        self, *, provider: Optional[str] = None, since: Any = None
+    ) -> List[PricingModel]:
+        """Every model in the AICM pricing catalog, across all providers.
 
-    def list_vendor_services(self, vendor: str) -> Iterable[ServiceOut]:
-        data = self._request("GET", "/services/", params={"vendor": vendor})
-        # Add vendor field to each service object since the API doesn't include it
-        for service in data:
-            service["vendor"] = vendor
-        return [ServiceOut.model_validate(i) for i in data]
-
-    def list_service_costs(self, vendor: str, service: str) -> Iterable[CostUnitOut]:
-        """List cost units for a service."""
+        ``since`` (a datetime, date or ISO 8601 string; naive means UTC) keeps
+        only models AICM first listed at or after it. Pass the newest
+        ``first_seen_at`` from the previous call to poll for new models.
+        ``provider`` takes a provider id such as ``"anthropic"``. The
+        unfiltered catalog is over 10,000 models.
+        """
         data = self._request(
-            "GET",
-            "/service-costs/",
-            params={"vendor": vendor, "service": service},
+            "GET", "/pricing/models", params=catalog_params(provider, since)
         )
-        return [CostUnitOut.model_validate(i) for i in data]
+        return [PricingModel.model_validate(m) for m in data["models"]]
+
+    def get_model(self, model_id: str) -> PricingModel:
+        """One catalog model by its id, ``<provider_id>::<model_name>``."""
+        data = self._request("GET", f"/pricing/models/{model_id}")
+        return PricingModel.model_validate(data)
 
     # Cost events methods
     def list_cost_events(
@@ -324,6 +324,14 @@ class CostManagerClient(BaseClient):
         return [ApiCostEventOut.model_validate(i) for i in data]
 
     # Webhook methods
+    def _webhooks_path(self, webhook_uuid: Optional[str] = None) -> str:
+        """Webhooks live under the API key's team, which is looked up once."""
+        if self._team_slug is None:
+            teams = self._request("GET", "/teams/")
+            self._team_slug = teams[0]["slug"]
+        path = f"/teams/{self._team_slug}/webhooks/"
+        return f"{path}{webhook_uuid}/" if webhook_uuid else path
+
     def create_webhook_endpoint(
         self, data: WebhookEndpointCreate | Dict[str, Any]
     ) -> WebhookEndpointOut:
@@ -332,19 +340,19 @@ class CostManagerClient(BaseClient):
             if isinstance(data, WebhookEndpointCreate)
             else data
         )
-        resp = self._request("POST", "/webhooks/", json=payload)
+        resp = self._request("POST", self._webhooks_path(), json=payload)
         return WebhookEndpointOut.model_validate(resp)
 
     def list_webhook_endpoints(
-        self, active_only: bool = False, **params: Any
+        self, active_only: bool = False
     ) -> WebhookEndpointsResponse:
-        params = {k: v for k, v in params.items() if v is not None}
-        params["active_only"] = active_only
-        data = self._request("GET", "/webhooks/", params=params)
-        return WebhookEndpointsResponse.model_validate(data)
+        data = self._request("GET", self._webhooks_path())
+        return WebhookEndpointsResponse.model_validate(
+            webhooks_response(data, active_only)
+        )
 
     def get_webhook_endpoint(self, webhook_uuid: str) -> WebhookEndpointOut:
-        data = self._request("GET", f"/webhooks/{webhook_uuid}/")
+        data = self._request("GET", self._webhooks_path(webhook_uuid))
         return WebhookEndpointOut.model_validate(data)
 
     def update_webhook_endpoint(
@@ -355,11 +363,11 @@ class CostManagerClient(BaseClient):
             if isinstance(data, WebhookEndpointUpdate)
             else data
         )
-        resp = self._request("PUT", f"/webhooks/{webhook_uuid}/", json=payload)
+        resp = self._request("PATCH", self._webhooks_path(webhook_uuid), json=payload)
         return WebhookEndpointOut.model_validate(resp)
 
     def delete_webhook_endpoint(self, webhook_uuid: str) -> None:
-        self._request("DELETE", f"/webhooks/{webhook_uuid}/")
+        self._request("DELETE", self._webhooks_path(webhook_uuid))
         return None
 
     # Custom services methods
