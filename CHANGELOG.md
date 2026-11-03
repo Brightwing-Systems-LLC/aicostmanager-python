@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-11-03
+
+### Added
+- **Model catalog.** `list_models(provider=None, since=None)` returns every model
+  AICM prices, across all providers, as `PricingModel`; `since` keeps only models
+  first listed at or after a time, so a caller can poll for new ones using the
+  newest `first_seen_at`. `get_model(model_id)` returns one. Both clients.
+
+### Fixed
+- **Webhook methods reach the server.** They called `/webhooks/`, which no
+  longer exists. They now use the API key's team, `/teams/{slug}/webhooks/`
+  (the slug is looked up once), and update with PATCH. `WebhookEndpointOut`
+  matches the server: it has `purpose` and no longer requires `secret` or
+  `team_uuid`. `list_webhook_endpoints()` dropped its unused `**params`.
+
+### Removed
+- `list_vendors()`, `list_vendor_services()` and `list_service_costs()`, and
+  the `VendorOut` and `ServiceOut` models. Their routes were removed from the
+  server and every call returned 404; use `list_models()`. `CostUnitOut` now
+  describes a catalog rate.
+
 ## [0.3.2] - 2026-10-25
 
 ### Fixed

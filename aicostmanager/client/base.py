@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from .exceptions import MissingConfiguration
 from ..ini_manager import IniManager
@@ -17,6 +17,8 @@ class BaseClient:
     3. Environment variables ``AICM_API_BASE``/``AICM_API_URL``
     4. Defaults ``https://aicostmanager.com`` and ``/api/v1``
     """
+
+    _team_slug: Optional[str] = None
 
     def __init__(
         self,
@@ -63,3 +65,23 @@ class BaseClient:
         else:
             tl_data = triggered_limits_response
         cfg_mgr.write_triggered_limits(tl_data)
+
+
+def catalog_params(provider: Optional[str], since: Any) -> Dict[str, str]:
+    """Query params for ``/pricing/models``; ``since`` may be a date, datetime or string."""
+    params: Dict[str, str] = {}
+    if provider:
+        params["provider"] = provider
+    if since is not None:
+        params["since"] = since if isinstance(since, str) else since.isoformat()
+    return params
+
+
+def webhooks_response(data: List[dict], active_only: bool) -> Dict[str, Any]:
+    """Shape the server's plain list as ``WebhookEndpointsResponse``."""
+    endpoints = [e for e in data if e.get("active") or not active_only]
+    return {
+        "endpoints": endpoints,
+        "total_count": len(endpoints),
+        "active_count": sum(1 for e in endpoints if e.get("active")),
+    }
